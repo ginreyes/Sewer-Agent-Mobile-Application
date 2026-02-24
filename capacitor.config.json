@@ -1,0 +1,20 @@
+{
+  "appId": "ai.concertina.device",
+  "appName": "Concertina Device",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "Camera": {
+      "saveToGallery": false
+    },
+    "Device": {}
+  }
+}

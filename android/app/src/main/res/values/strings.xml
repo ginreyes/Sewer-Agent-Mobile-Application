@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Concertina Device</string>
-    <string name="title_activity_main">Concertina Device</string>
+    <string name="app_name">Sewer Agent Ai App</string>
+    <string name="title_activity_main">Sewer Agent Ai App Device Registration</string>
     <string name="package_name">ai.concertina.device</string>
     <string name="custom_url_scheme">ai.concertina.device</string>
 </resources>

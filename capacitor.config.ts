@@ -1,11 +1,11 @@
+import 'dotenv/config';
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'ai.concertina.device',
-  appName: 'Concertina Device',
-  webDir: 'www',
+  appId: process.env.CAPACITOR_APP_ID || 'ai.concertina.device',
+  appName: process.env.CAPACITOR_APP_NAME || 'Sewer Agent Ai App',
+  webDir: 'dist',
   server: {
-    // Allow opening https?://your-concertina.com/device-connect?deviceId=...&secret=...
     androidScheme: 'https',
   },
 };

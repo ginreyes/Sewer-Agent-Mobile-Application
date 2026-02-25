@@ -1,3 +1,8 @@
-node_modules/ 
-android/build/ 
-.gradle/ 
+node_modules/
+android/build/
+.gradle/
+
+# Local env (copy from .env.example)
+.env
+.env.local
+.env.*.local 

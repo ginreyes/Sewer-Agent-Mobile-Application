@@ -113,5 +113,18 @@ export function createApiClient(connection) {
     return request('GET', `/api/devices/${encodeURIComponent(deviceId)}`);
   }
 
-  return { request, ingest, uploadVideo, getDevice };
+  /**
+   * GET /api/devices/:id/projects – fetch projects assigned to this device's operator.
+   * Returns projects that can be linked to uploaded videos.
+   */
+  async function getProjects() {
+    try {
+      const data = await request('GET', `/api/devices/${encodeURIComponent(deviceId)}/projects`);
+      return data?.data || data?.projects || [];
+    } catch {
+      return [];
+    }
+  }
+
+  return { request, ingest, uploadVideo, getDevice, getProjects };
 }

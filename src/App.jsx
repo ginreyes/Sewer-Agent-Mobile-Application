@@ -80,6 +80,11 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
 
   const [projectIdInput, setProjectIdInput] = useState('');
+  // Projects assigned to this device's operator, fetched after the device
+  // is connected. Empty until the connection is live; UI falls back to a
+  // free-text input if the fetch yields nothing.
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const videoFileRef = React.useRef(null);
   const canvasRef = React.useRef(null);
 
@@ -104,6 +109,31 @@ export default function App() {
     const t = setTimeout(() => setLoadingVisible(false), 600);
     return () => clearTimeout(t);
   }, []);
+
+  // Fetch operator's assigned projects when the upload step opens with a
+  // live connection. Operator-side feedback from May 8: typing a UUID into
+  // a tablet keyboard mid-job is brutal — a picker fixes this. Empty
+  // projects[] silently falls back to the free-text input so the screen
+  // never blocks on a network hiccup.
+  useEffect(() => {
+    if (currentStep !== 2 || !conn) return;
+    let cancelled = false;
+    setProjectsLoading(true);
+    (async () => {
+      try {
+        const api = createApiClient(conn);
+        const list = await api.getProjects();
+        if (!cancelled) setProjects(Array.isArray(list) ? list : []);
+      } catch {
+        if (!cancelled) setProjects([]);
+      } finally {
+        if (!cancelled) setProjectsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStep, conn]);
 
   useEffect(() => {
     if (window.Capacitor?.Plugins?.App?.getLaunchUrl) {
@@ -501,14 +531,36 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase text-gray-500">Project ID (optional)</label>
-                  <input
-                    type="text"
-                    value={projectIdInput}
-                    onChange={(e) => setProjectIdInput(e.target.value)}
-                    placeholder="Project ID to link video"
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 text-sm"
-                  />
+                  <label className="mb-1 block text-xs font-semibold uppercase text-gray-500">
+                    Link to Project {projects.length > 0 ? `(${projects.length} available)` : '(optional)'}
+                  </label>
+                  {projects.length > 0 ? (
+                    <select
+                      value={projectIdInput}
+                      onChange={(e) => setProjectIdInput(e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 pr-8 text-sm"
+                    >
+                      <option value="">— No project —</option>
+                      {projects.map((p) => {
+                        const id = p._id || p.id;
+                        const label = p.name || p.workOrder || id;
+                        return (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={projectIdInput}
+                      onChange={(e) => setProjectIdInput(e.target.value)}
+                      placeholder={projectsLoading ? 'Loading projects…' : 'Project ID to link video'}
+                      disabled={projectsLoading}
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 text-sm disabled:opacity-60"
+                    />
+                  )}
                 </div>
                 <button
                   type="button"

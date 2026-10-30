@@ -9,6 +9,7 @@ import LoadingScreen from './components/LoadingScreen';
 import PermissionPrompt from './components/PermissionPrompt';
 import ScannerOverlay from './components/ScannerOverlay';
 
+const HEARTBEAT_MS = 2 * 60 * 1000;
 const CAMERA_LOG = '[Sewer Agent Ai Device Camera]';
 function cameraLog(msg, data) {
   console.log(CAMERA_LOG, msg, data !== undefined ? data : '');
@@ -86,6 +87,8 @@ export default function App() {
   // free-text input if the fetch yields nothing.
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [checkIn, setCheckIn] = useState({ at: null, rejected: false });
+  const online = !!connection && !checkIn.rejected && checkIn.at != null;
   const videoFileRef = React.useRef(null);
   const canvasRef = React.useRef(null);
 
@@ -177,8 +180,45 @@ export default function App() {
     if (connection) saveConnection(connection);
   }, [connection]);
 
+  // Check in every 2 minutes while the app is open and connected, so the
+  // device shows as online in Concertina; the server marks it offline after
+  // 10 quiet minutes. Paused while the app is in the background.
+  useEffect(() => {
+    if (!connection) return;
+    const api = createApiClient(connection);
+    let timer = null;
+    const beat = async () => {
+      try {
+        const battery = await getBattery();
+        await api.ingest({ battery: battery ?? undefined, signal: getSignal() || undefined, status: 'active' });
+        setCheckIn({ at: Date.now(), rejected: false });
+      } catch (e) {
+        setCheckIn({ at: null, rejected: e.status === 401 || e.status === 404 });
+      }
+    };
+    const start = () => {
+      if (timer) return;
+      beat();
+      timer = setInterval(beat, HEARTBEAT_MS);
+    };
+    const stop = () => {
+      clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => (document.visibilityState === 'hidden' ? stop() : start());
+    onVisibility();
+    document.addEventListener('visibilitychange', onVisibility);
+    const appState = window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', ({ isActive }) => (isActive ? start() : stop()));
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      Promise.resolve(appState).then((h) => h?.remove?.());
+    };
+  }, [connection]);
+
   const handleDisconnect = () => {
     clearSavedConnection();
+    setCheckIn({ at: null, rejected: false });
     setConnection(null);
     setUrlInput('');
     setDeviceIdInput('');
@@ -353,7 +393,7 @@ export default function App() {
       />
 
       <div className="min-h-screen bg-white pb-10 max-w-[480px] mx-auto">
-        <header className="flex items-center gap-3 px-5 pt-5 pb-6 pt-[calc(1.25rem+env(safe-area-inset-top))]">
+        <header className="flex items-center gap-3 px-5 pb-6 pt-[calc(1.25rem+env(safe-area-inset-top))]">
           <img src={logoSewerAi} alt="Sewer AI" className="h-9 w-auto max-w-[140px] object-contain" />
           <div>
             <h1 className="text-lg font-bold text-gray-900">{import.meta.env.VITE_APP_TITLE || 'Sewer Agent Ai App Device Registration'}</h1>
@@ -362,8 +402,12 @@ export default function App() {
         </header>
 
         <div className="mx-5 mb-5 flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-600">
-          <span className={`h-2 w-2 rounded-full ${conn ? 'bg-green-500' : 'bg-gray-400'}`} />
-          {conn ? 'Connected' : 'Not connected'}
+          <span
+            className={`h-2 w-2 rounded-full ${
+              checkIn.rejected ? 'bg-red-500' : conn ? 'bg-green-500' : 'bg-gray-400'
+            } ${online ? 'animate-pulse' : ''}`}
+          />
+          {checkIn.rejected ? 'Secret no longer valid — scan the new QR' : online ? 'Online' : conn ? 'Connected' : 'Not connected'}
           {conn && <span className="ml-auto truncate text-xs text-gray-500">{conn.deviceId.slice(-8)}…</span>}
           {connection && (
             <button type="button" onClick={handleDisconnect} className="shrink-0 text-xs font-semibold text-red-600">

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Device } from '@capacitor/device';
 import { Camera, CameraSource, CameraResultType } from '@capacitor/camera';
-import { parseConnectionUrl } from './utils/connection';
+import { parseConnectionUrl, loadSavedConnection, saveConnection, clearSavedConnection } from './utils/connection';
 import { createApiClient } from './api/client';
 import { decodeQRFromImageSource } from './utils/qr';
 import logoSewerAi from './assets/logo-sewer-ai.svg';
@@ -61,8 +61,9 @@ function getSignal() {
 export default function App() {
   const [loadingVisible, setLoadingVisible] = useState(true);
   const [permissionVisible, setPermissionVisible] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [connection, setConnection] = useState(null);
+  // A device connected before reopens on the device-info step.
+  const [connection, setConnection] = useState(loadSavedConnection);
+  const [currentStep, setCurrentStep] = useState(() => (connection ? 1 : 0));
   const [scannerOpen, setScannerOpen] = useState(false);
 
   const [urlInput, setUrlInput] = useState('');
@@ -97,7 +98,7 @@ export default function App() {
       return {
         deviceId: deviceIdInput.trim(),
         secret: secretInput.trim(),
-        apiBase: apiBaseInput.trim() || import.meta.env.VITE_DEFAULT_API_BASE || 'http://http://192.168.50.11:5000',
+        apiBase: apiBaseInput.trim() || import.meta.env.VITE_DEFAULT_API_BASE || 'http://192.168.50.11:5000',
       };
     }
     return null;
@@ -152,19 +153,41 @@ export default function App() {
     }
   }, []);
 
+  // addListener resolves to the handle that removes it. The old cleanup
+  // called .remove on the callback instead, so every step change stacked
+  // another listener and one press of Back could jump several steps or
+  // close the app.
   useEffect(() => {
-    if (!window.Capacitor?.Plugins?.App) return;
-    const listener = () => {
+    const AppPlugin = window.Capacitor?.Plugins?.App;
+    if (!AppPlugin) return;
+    const handle = AppPlugin.addListener('backButton', () => {
       if (scannerOpen) {
         setScannerOpen(false);
         return;
       }
       if (currentStep > 0) setCurrentStep((s) => s - 1);
-      else window.Capacitor.Plugins.App.exitApp();
+      else AppPlugin.exitApp();
+    });
+    return () => {
+      Promise.resolve(handle).then((h) => h?.remove?.());
     };
-    window.Capacitor.Plugins.App.addListener('backButton', listener);
-    return () => listener.remove?.();
   }, [scannerOpen, currentStep]);
+
+  useEffect(() => {
+    if (connection) saveConnection(connection);
+  }, [connection]);
+
+  const handleDisconnect = () => {
+    clearSavedConnection();
+    setConnection(null);
+    setUrlInput('');
+    setDeviceIdInput('');
+    setSecretInput('');
+    setSendStatus({ type: '', message: '' });
+    setUploadStatus({ type: '', message: '' });
+    setProjects([]);
+    setCurrentStep(0);
+  };
 
   const handleScanSuccess = useCallback(
     (urlString) => {
@@ -342,6 +365,11 @@ export default function App() {
           <span className={`h-2 w-2 rounded-full ${conn ? 'bg-green-500' : 'bg-gray-400'}`} />
           {conn ? 'Connected' : 'Not connected'}
           {conn && <span className="ml-auto truncate text-xs text-gray-500">{conn.deviceId.slice(-8)}…</span>}
+          {connection && (
+            <button type="button" onClick={handleDisconnect} className="shrink-0 text-xs font-semibold text-red-600">
+              Disconnect
+            </button>
+          )}
         </div>
 
         <div className="mx-5 mb-5 flex rounded-xl bg-gray-100 p-1">

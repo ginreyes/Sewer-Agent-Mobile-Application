@@ -35,7 +35,7 @@ export function createApiClient(connection) {
    */
   async function request(method, path, options = {}) {
     const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : '/' + path}`;
-    const headers = { ...options.headers };
+    const headers = { 'X-Device-Secret': secret, ...options.headers };
     let body = options.body;
     if (body && typeof body === 'object' && !(body instanceof FormData)) {
       headers['Content-Type'] = 'application/json';
@@ -84,6 +84,8 @@ export function createApiClient(connection) {
       const xhr = new XMLHttpRequest();
       const url = `${base}/api/devices/${encodeURIComponent(deviceId)}/upload-video`;
       xhr.open('POST', url);
+      // Lets the server reject a bad secret before the video is transferred.
+      xhr.setRequestHeader('X-Device-Secret', secret);
       if (options.onProgress) {
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) options.onProgress(Math.round((e.loaded / e.total) * 100));
@@ -113,5 +115,18 @@ export function createApiClient(connection) {
     return request('GET', `/api/devices/${encodeURIComponent(deviceId)}`);
   }
 
-  return { request, ingest, uploadVideo, getDevice };
+  /**
+   * GET /api/devices/:id/projects – fetch projects assigned to this device's operator.
+   * Returns projects that can be linked to uploaded videos.
+   */
+  async function getProjects() {
+    try {
+      const data = await request('GET', `/api/devices/${encodeURIComponent(deviceId)}/projects`);
+      return data?.data || data?.projects || [];
+    } catch {
+      return [];
+    }
+  }
+
+  return { request, ingest, uploadVideo, getDevice, getProjects };
 }

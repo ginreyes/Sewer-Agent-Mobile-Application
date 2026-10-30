@@ -14,3 +14,31 @@ export function parseConnectionUrl(input) {
     return null;
   }
 }
+
+const STORAGE_KEY = 'concertina.connection';
+
+// Remembered so the QR code is scanned once per device, not on every launch.
+export function loadSavedConnection() {
+  try {
+    const c = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    return c?.deviceId && c?.secret && c?.apiBase ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveConnection({ deviceId, secret, apiBase }) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ deviceId, secret, apiBase }));
+  } catch {
+    /* storage unavailable — the app still works for this session */
+  }
+}
+
+export function clearSavedConnection() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}

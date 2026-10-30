@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Device } from '@capacitor/device';
 import { Camera, CameraSource, CameraResultType } from '@capacitor/camera';
-import { parseConnectionUrl } from './utils/connection';
+import { parseConnectionUrl, loadSavedConnection, saveConnection, clearSavedConnection } from './utils/connection';
 import { createApiClient } from './api/client';
 import { decodeQRFromImageSource } from './utils/qr';
 import logoSewerAi from './assets/logo-sewer-ai.svg';
@@ -9,6 +9,7 @@ import LoadingScreen from './components/LoadingScreen';
 import PermissionPrompt from './components/PermissionPrompt';
 import ScannerOverlay from './components/ScannerOverlay';
 
+const HEARTBEAT_MS = 2 * 60 * 1000;
 const CAMERA_LOG = '[Sewer Agent Ai Device Camera]';
 function cameraLog(msg, data) {
   console.log(CAMERA_LOG, msg, data !== undefined ? data : '');
@@ -61,8 +62,9 @@ function getSignal() {
 export default function App() {
   const [loadingVisible, setLoadingVisible] = useState(true);
   const [permissionVisible, setPermissionVisible] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [connection, setConnection] = useState(null);
+  // A device connected before reopens on the device-info step.
+  const [connection, setConnection] = useState(loadSavedConnection);
+  const [currentStep, setCurrentStep] = useState(() => (connection ? 1 : 0));
   const [scannerOpen, setScannerOpen] = useState(false);
 
   const [urlInput, setUrlInput] = useState('');
@@ -80,6 +82,13 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
 
   const [projectIdInput, setProjectIdInput] = useState('');
+  // Projects assigned to this device's operator, fetched after the device
+  // is connected. Empty until the connection is live; UI falls back to a
+  // free-text input if the fetch yields nothing.
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [checkIn, setCheckIn] = useState({ at: null, rejected: false });
+  const online = !!connection && !checkIn.rejected && checkIn.at != null;
   const videoFileRef = React.useRef(null);
   const canvasRef = React.useRef(null);
 
@@ -92,7 +101,7 @@ export default function App() {
       return {
         deviceId: deviceIdInput.trim(),
         secret: secretInput.trim(),
-        apiBase: apiBaseInput.trim() || import.meta.env.VITE_DEFAULT_API_BASE || 'http://http://192.168.50.11:5000',
+        apiBase: apiBaseInput.trim() || import.meta.env.VITE_DEFAULT_API_BASE || 'http://192.168.50.11:5000',
       };
     }
     return null;
@@ -104,6 +113,31 @@ export default function App() {
     const t = setTimeout(() => setLoadingVisible(false), 600);
     return () => clearTimeout(t);
   }, []);
+
+  // Fetch operator's assigned projects when the upload step opens with a
+  // live connection. Operator-side feedback from May 8: typing a UUID into
+  // a tablet keyboard mid-job is brutal — a picker fixes this. Empty
+  // projects[] silently falls back to the free-text input so the screen
+  // never blocks on a network hiccup.
+  useEffect(() => {
+    if (currentStep !== 2 || !conn) return;
+    let cancelled = false;
+    setProjectsLoading(true);
+    (async () => {
+      try {
+        const api = createApiClient(conn);
+        const list = await api.getProjects();
+        if (!cancelled) setProjects(Array.isArray(list) ? list : []);
+      } catch {
+        if (!cancelled) setProjects([]);
+      } finally {
+        if (!cancelled) setProjectsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStep, conn]);
 
   useEffect(() => {
     if (window.Capacitor?.Plugins?.App?.getLaunchUrl) {
@@ -122,19 +156,78 @@ export default function App() {
     }
   }, []);
 
+  // addListener resolves to the handle that removes it. The old cleanup
+  // called .remove on the callback instead, so every step change stacked
+  // another listener and one press of Back could jump several steps or
+  // close the app.
   useEffect(() => {
-    if (!window.Capacitor?.Plugins?.App) return;
-    const listener = () => {
+    const AppPlugin = window.Capacitor?.Plugins?.App;
+    if (!AppPlugin) return;
+    const handle = AppPlugin.addListener('backButton', () => {
       if (scannerOpen) {
         setScannerOpen(false);
         return;
       }
       if (currentStep > 0) setCurrentStep((s) => s - 1);
-      else window.Capacitor.Plugins.App.exitApp();
+      else AppPlugin.exitApp();
+    });
+    return () => {
+      Promise.resolve(handle).then((h) => h?.remove?.());
     };
-    window.Capacitor.Plugins.App.addListener('backButton', listener);
-    return () => listener.remove?.();
   }, [scannerOpen, currentStep]);
+
+  useEffect(() => {
+    if (connection) saveConnection(connection);
+  }, [connection]);
+
+  // Check in every 2 minutes while the app is open and connected, so the
+  // device shows as online in Concertina; the server marks it offline after
+  // 10 quiet minutes. Paused while the app is in the background.
+  useEffect(() => {
+    if (!connection) return;
+    const api = createApiClient(connection);
+    let timer = null;
+    const beat = async () => {
+      try {
+        const battery = await getBattery();
+        await api.ingest({ battery: battery ?? undefined, signal: getSignal() || undefined, status: 'active' });
+        setCheckIn({ at: Date.now(), rejected: false });
+      } catch (e) {
+        setCheckIn({ at: null, rejected: e.status === 401 || e.status === 404 });
+      }
+    };
+    const start = () => {
+      if (timer) return;
+      beat();
+      timer = setInterval(beat, HEARTBEAT_MS);
+    };
+    const stop = () => {
+      clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => (document.visibilityState === 'hidden' ? stop() : start());
+    onVisibility();
+    document.addEventListener('visibilitychange', onVisibility);
+    const appState = window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', ({ isActive }) => (isActive ? start() : stop()));
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      Promise.resolve(appState).then((h) => h?.remove?.());
+    };
+  }, [connection]);
+
+  const handleDisconnect = () => {
+    clearSavedConnection();
+    setCheckIn({ at: null, rejected: false });
+    setConnection(null);
+    setUrlInput('');
+    setDeviceIdInput('');
+    setSecretInput('');
+    setSendStatus({ type: '', message: '' });
+    setUploadStatus({ type: '', message: '' });
+    setProjects([]);
+    setCurrentStep(0);
+  };
 
   const handleScanSuccess = useCallback(
     (urlString) => {
@@ -300,7 +393,7 @@ export default function App() {
       />
 
       <div className="min-h-screen bg-white pb-10 max-w-[480px] mx-auto">
-        <header className="flex items-center gap-3 px-5 pt-5 pb-6 pt-[calc(1.25rem+env(safe-area-inset-top))]">
+        <header className="flex items-center gap-3 px-5 pb-6 pt-[calc(1.25rem+env(safe-area-inset-top))]">
           <img src={logoSewerAi} alt="Sewer AI" className="h-9 w-auto max-w-[140px] object-contain" />
           <div>
             <h1 className="text-lg font-bold text-gray-900">{import.meta.env.VITE_APP_TITLE || 'Sewer Agent Ai App Device Registration'}</h1>
@@ -309,9 +402,18 @@ export default function App() {
         </header>
 
         <div className="mx-5 mb-5 flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-600">
-          <span className={`h-2 w-2 rounded-full ${conn ? 'bg-green-500' : 'bg-gray-400'}`} />
-          {conn ? 'Connected' : 'Not connected'}
+          <span
+            className={`h-2 w-2 rounded-full ${
+              checkIn.rejected ? 'bg-red-500' : conn ? 'bg-green-500' : 'bg-gray-400'
+            } ${online ? 'animate-pulse' : ''}`}
+          />
+          {checkIn.rejected ? 'Secret no longer valid — scan the new QR' : online ? 'Online' : conn ? 'Connected' : 'Not connected'}
           {conn && <span className="ml-auto truncate text-xs text-gray-500">{conn.deviceId.slice(-8)}…</span>}
+          {connection && (
+            <button type="button" onClick={handleDisconnect} className="shrink-0 text-xs font-semibold text-red-600">
+              Disconnect
+            </button>
+          )}
         </div>
 
         <div className="mx-5 mb-5 flex rounded-xl bg-gray-100 p-1">
@@ -501,14 +603,36 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase text-gray-500">Project ID (optional)</label>
-                  <input
-                    type="text"
-                    value={projectIdInput}
-                    onChange={(e) => setProjectIdInput(e.target.value)}
-                    placeholder="Project ID to link video"
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 text-sm"
-                  />
+                  <label className="mb-1 block text-xs font-semibold uppercase text-gray-500">
+                    Link to Project {projects.length > 0 ? `(${projects.length} available)` : '(optional)'}
+                  </label>
+                  {projects.length > 0 ? (
+                    <select
+                      value={projectIdInput}
+                      onChange={(e) => setProjectIdInput(e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 pr-8 text-sm"
+                    >
+                      <option value="">— No project —</option>
+                      {projects.map((p) => {
+                        const id = p._id || p.id;
+                        const label = p.name || p.workOrder || id;
+                        return (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={projectIdInput}
+                      onChange={(e) => setProjectIdInput(e.target.value)}
+                      placeholder={projectsLoading ? 'Loading projects…' : 'Project ID to link video'}
+                      disabled={projectsLoading}
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-3 text-sm disabled:opacity-60"
+                    />
+                  )}
                 </div>
                 <button
                   type="button"
